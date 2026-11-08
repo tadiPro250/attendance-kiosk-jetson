@@ -6,9 +6,10 @@ from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="att_floor_test_")
 atexit.register(lambda: shutil.rmtree(_TMP, ignore_errors=True))
-os.environ.update(ATT_SIM="1", ATT_DB=os.path.join(_TMP, "t.db"), ATT_API_URL="", ATT_STATE_DIR=os.path.join(_TMP, "state"), ATT_RUN_DIR=os.path.join(_TMP, "run"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import server
+from tests._load import fresh_server
+server = fresh_server(ATT_SIM="1", ATT_DB=os.path.join(_TMP, "t.db"), ATT_API_URL="",
+                      ATT_STATE_DIR=os.path.join(_TMP, "state"), ATT_RUN_DIR=os.path.join(_TMP, "run"))
 
 K = server.K
 FLOOR = datetime(2026, 11, 6, 9, 0, 0)

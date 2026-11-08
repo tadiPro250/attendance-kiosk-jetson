@@ -4,9 +4,9 @@ import atexit, glob, os, sys, tempfile, unittest
 from datetime import datetime
 
 _DB = os.path.join(tempfile.mkdtemp(prefix="att_clock_test_"), "test.db")      # a private folder, so cleanup touches only our files
-os.environ.update(ATT_SIM="1", ATT_DB=_DB, ATT_API_URL="")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import server
+from tests._load import fresh_server
+server = fresh_server(ATT_SIM="1", ATT_DB=_DB, ATT_API_URL="")
 
 def _cleanup():
     for p in glob.glob(_DB + "*"): os.remove(p)
