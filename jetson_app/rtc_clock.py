@@ -20,6 +20,8 @@ BUS = int(os.environ.get("RTC_I2C_BUS", "1"))
 ADDR = 0x68
 RUN_DIR = os.environ.get("ATT_RUN_DIR", "/run/attendance")
 STATE_DIR = os.environ.get("ATT_STATE_DIR", "/var/lib/attendance")
+EARLIEST = datetime(2025, 1, 1)    # an RTC reading before this was never set
+LATEST = datetime(2100, 1, 1)      # the chips only count 2000-2099
 
 
 def bcd(n): return ((n // 10) << 4) | (n % 10)
@@ -75,12 +77,18 @@ def main(argv=None):
     elif cmd == "load":
         t, bad = read_rtc()
         if bad: print("The RTC clock is halted (flat battery, or never set); not loading it. Run 'save' once network time is synced."); return 1
-        if not (datetime(2025, 1, 1) < t < now + timedelta(days=366)): print("RTC time %s is implausible; not loading it." % t); return 1
+        # The upper bound can only lean on the system clock when that clock is itself plausible. After a power cut it reads 1970 or the
+        # systemd build date, which is exactly when the RTC is needed, so then only a fixed far-future cap applies.
+        upper = now + timedelta(days=366) if now > EARLIEST else LATEST
+        if not (EARLIEST < t < upper): print("RTC time %s is implausible; not loading it." % t); return 1
+        if not ntp_synced():
+            set_system_time(t)
+            print("System clock set from RTC: %s UTC" % t)
+        else:
+            print("Network time is already synced; leaving the system clock alone.")
+        # written only once the system clock really holds a good time: the server trusts the clock when it sees this stamp
         os.makedirs(RUN_DIR, exist_ok=True)
         with open(os.path.join(RUN_DIR, "rtc_loaded"), "w") as f: f.write(t.isoformat())
-        if ntp_synced(): print("Network time is already synced; leaving the system clock alone."); return 0
-        set_system_time(t)
-        print("System clock set from RTC: %s UTC" % t)
     elif cmd == "save":
         if not ntp_synced(): print("Network time is not synced yet; leaving the RTC alone."); return 0
         write_rtc(now)

@@ -72,6 +72,22 @@ class RtcTests(unittest.TestCase):
         self.assertEqual(rtc.main(["x", "load"]), 0)
         self.assertEqual(self.set_calls, [])
 
+    def test_8b_load_works_when_the_system_clock_was_reset_by_a_power_cut(self):
+        self.now = datetime(2018, 1, 28, 12, 0, 0)                                     # systemd's build date: the clock lost the time
+        rtc.write_rtc(datetime(2026, 11, 6, 8, 0, 0))
+        self.assertEqual(rtc.main(["x", "load"]), 0)
+        self.assertEqual(self.set_calls, [datetime(2026, 11, 6, 8, 0, 0)])
+        self.now = datetime(1970, 1, 1, 0, 0, 5)
+        rtc.write_rtc(datetime(2099, 12, 31, 0, 0, 0))
+        self.assertEqual(rtc.main(["x", "load"]), 0)                                   # still inside the chip's range
+
+    def test_8c_the_loaded_stamp_is_only_written_once_the_clock_is_set(self):
+        rtc.write_rtc(datetime(2026, 11, 6, 8, 0, 0))
+        def fail(t): raise OSError("date: cannot set date")
+        rtc.set_system_time = fail
+        with self.assertRaises(OSError): rtc.main(["x", "load"])
+        self.assertFalse(os.path.exists(os.path.join(rtc.RUN_DIR, "rtc_loaded")))   # the server must not trust an unset clock
+
     def test_9_save_waits_for_network_time(self):
         self.assertEqual(rtc.main(["x", "save"]), 0)
         self.assertEqual(list(REGS[0:7]), [0] * 7)

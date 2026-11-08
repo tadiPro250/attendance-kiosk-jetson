@@ -44,6 +44,8 @@ TIMEOUT = {"purpose": 25, "unknown": 60, "admin_wait": 60, "admin_form": 180, "i
 MAX_ADMINS = int(os.environ.get("ATT_MAX_ADMINS", "2"))
 LED_REFRESH = 3.0   # seconds: the ring mode is re-sent this often (the ESP falls back to idle if it hears nothing for 10 s)
 DEBOUNCE = 4        # seconds: same card tapped again is ignored
+MAX_OPEN = float(os.environ.get("ATT_MAX_OPEN_HOURS", "14")) * 3600   # a visit open longer than this was a forgotten tap-out
+OPEN = "out_time IS NULL AND (out_q IS NULL OR out_q<>'missed')"       # SQL: a visit the person is still on
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -100,11 +102,12 @@ class Kiosk:
         have = set(r[1] for r in self.db.execute("PRAGMA table_info(visits)"))
         for col, decl in [("uuid", "TEXT"), ("purpose_id", "TEXT"), ("in_mono", "REAL"), ("in_boot", "TEXT"), ("in_q", "TEXT"),
                           ("out_mono", "REAL"), ("out_boot", "TEXT"), ("out_q", "TEXT"),
-                          ("rev", "INTEGER DEFAULT 1"), ("synced_rev", "INTEGER DEFAULT 0")]:
+                          ("rev", "INTEGER DEFAULT 1"), ("synced_rev", "INTEGER DEFAULT 0"), ("sync_fail", "INTEGER DEFAULT 0")]:
             if col not in have: self.db.execute("ALTER TABLE visits ADD COLUMN %s %s" % (col, decl))
         for (i,) in self.db.execute("SELECT id FROM visits WHERE uuid IS NULL").fetchall():
             self.db.execute("UPDATE visits SET uuid=? WHERE id=?", (uuid.uuid4().hex, i))
         self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_visits_uuid ON visits(uuid)")
+        self.db.execute("UPDATE people SET card_uid=NULL WHERE card_uid=''")   # older imports stored '' for "no card"
         self.db.commit()
         self.screen, self.data, self.expires, self.ver = "idle", {}, 0, 0
         self.last_ident, self.last_ts = "", 0.0
@@ -217,7 +220,7 @@ class Kiosk:
     def admin_add(self, uid, name):
         uid, name = uid.strip().upper(), " ".join(name.split())
         if not uid or not name: return False, "A card id and a name are needed."
-        if self.db.execute("SELECT 1 FROM people WHERE card_uid=? OR key=?", (uid, uid)).fetchone(): return False, "That card belongs to a registered person."
+        if self.find_person(uid, uid): return False, "That card belongs to a registered person."
         have = [r[0] for r in self.admin_list()]
         if uid not in have and len(have) >= MAX_ADMINS: return False, "There are already %d admins. Remove one first." % MAX_ADMINS
         self.db.execute("INSERT OR REPLACE INTO admins(card_uid,name,added_at) VALUES(?,?,?)", (uid, name, time.time())); self.db.commit()
@@ -235,12 +238,12 @@ class Kiosk:
     def snapshot(self):
         with self.lock:
             self._expire()
-            inside = self.db.execute("SELECT COUNT(*) FROM visits WHERE out_time IS NULL").fetchone()[0]
+            inside = self.db.execute("SELECT COUNT(*) FROM visits WHERE %s" % OPEN).fetchone()[0]
             since = iso(utcnow() - timedelta(hours=24))
-            rows = self.db.execute("SELECT id,name,purpose,in_time,out_time FROM visits WHERE in_time>=? ORDER BY id DESC LIMIT 9",
+            rows = self.db.execute("SELECT id,name,purpose,in_time,out_time,out_q FROM visits WHERE in_time>=? ORDER BY id DESC LIMIT 9",
                                    (since,)).fetchall()
             board = [{"id": r[0], "name": r[1], "purpose": r[2], "in": fmt_t(parse(r[3])),
-                      "out": fmt_t(parse(r[4])) if r[4] else None} for r in rows]
+                      "out": fmt_t(parse(r[4])) if r[4] else ("No tap" if r[5] == "missed" else None)} for r in rows]
             pend = self.pending()
             return {"ver": self.ver, "screen": self.screen, "data": self.data,
                     "remaining": max(0, round(self.expires - time.time(), 2)) if self.expires else 0,
@@ -252,8 +255,16 @@ class Kiosk:
                     "sim": SIM, "lab": LAB_NAME, "purposes": [{"id": i, "label": l} for i, l in PURPOSES]}
 
     # ---- events ----
+    def find_person(self, ident, uid):
+        """The registered person for this tap, or None. An empty uid never matches: people imported without a card have no card_uid,
+        and a tap that only carries a registration number must not land on one of them."""
+        q, args = "SELECT key,name,department FROM people WHERE reg_no=? OR key=?", [ident, ident]
+        if uid: q += " OR card_uid=? OR key=?"; args += [uid, uid]
+        return self.db.execute(q, args).fetchone()
+
     def card(self, uid, reg=""):
-        ident = (reg or uid or "").strip().upper()
+        uid = (uid or "").strip().upper()                       # the ESP may print hex in either case; stored UIDs are upper case
+        ident = (reg or uid).strip().upper()
         if not ident: return
         with self.lock:
             if ident == self.last_ident and time.time() - self.last_ts < DEBOUNCE: return
@@ -269,8 +280,7 @@ class Kiosk:
                 elif self.screen != "admin_form":                    # nothing pending: wait for the new card
                     self._set("admin_wait", admin=admin)
                 return
-            p = self.db.execute("SELECT key,name,department FROM people WHERE reg_no=? OR card_uid=? OR key IN (?,?)",
-                                (ident, uid, ident, uid)).fetchone()
+            p = self.find_person(ident, uid)
             # 2. a card that is not in the database
             if not p:
                 self._log_unknown(ident, uid)
@@ -282,8 +292,10 @@ class Kiosk:
             if self.screen == "admin_form": return                  # keep the admin's form; this person can tap again afterwards
             # 3. a registered person: leaving, or arriving
             key = p[0]
-            v = self.db.execute("SELECT id,in_time,name,in_mono,in_boot FROM visits WHERE key=? AND out_time IS NULL ORDER BY id DESC LIMIT 1",
+            v = self.db.execute("SELECT id,in_time,name,in_mono,in_boot FROM visits WHERE key=? AND %s ORDER BY id DESC LIMIT 1" % OPEN,
                                 (key,)).fetchone()
+            if v and self._too_old(v[1], v[3], v[4], tap):          # they forgot to tap out last time: this tap is a new arrival
+                self._mark_missed(v[0]); v = None
             if v:                                                   # leaving
                 self.db.execute("UPDATE visits SET out_time=?, out_mono=?, out_boot=?, out_q=?, rev=rev+1 WHERE id=?",
                                 (iso(tap["wall"]), tap["mono"], tap["boot"], tap["q"], v[0]))
@@ -295,6 +307,28 @@ class Kiosk:
             else:
                 self.tap = tap
                 self._set("purpose", key=p[0], name=p[1], dept=p[2], tapped=fmt_t(tap["wall"])); self._hold("OK", 3)
+
+    def _too_old(self, in_time, in_mono, in_boot, tap):
+        """Has this open visit been open longer than MAX_OPEN? Uses the uptime counter within one boot (immune to clock jumps), the wall
+        clock across boots only when it is trusted. When neither can tell, the visit is treated as current."""
+        if in_boot == tap["boot"] and in_mono is not None: age = tap["mono"] - in_mono
+        elif tap["q"] == "ok": age = (tap["wall"] - parse(in_time)).total_seconds()
+        else: return False
+        return age > MAX_OPEN
+
+    def _mark_missed(self, visit_id):
+        """No exit time is invented: out_time stays empty (uploaded as such) and out_q='missed' closes the visit locally."""
+        self.db.execute("UPDATE visits SET out_q='missed' WHERE id=? AND out_time IS NULL", (visit_id,)); self.db.commit()
+
+    def close_forgotten(self):
+        """Close every visit left open longer than MAX_OPEN, so 'people inside' does not count them. Needs a trusted clock."""
+        if not self.clock_ok(): return 0
+        with self.lock:
+            tap = self.stamp()
+            rows = self.db.execute("SELECT id,in_time,in_mono,in_boot FROM visits WHERE %s" % OPEN).fetchall()
+            old = [r[0] for r in rows if self._too_old(r[1], r[2], r[3], tap)]
+            for i in old: self._mark_missed(i)
+            return len(old)
 
     def choose_purpose(self, purpose_id):
         with self.lock:
@@ -343,7 +377,8 @@ class Kiosk:
         with self.lock:
             rows = self.db.execute(
                 "SELECT v.uuid,v.rev,v.name,v.department,v.purpose_id,v.in_time,v.out_time,v.in_q,v.out_q,p.reg_no,p.card_uid "
-                "FROM visits v LEFT JOIN people p ON p.key=v.key WHERE v.rev>v.synced_rev ORDER BY v.id LIMIT 100").fetchall()
+                # visits the server refused before go to the back, so a pile of them can never hold up the newer ones
+                "FROM visits v LEFT JOIN people p ON p.key=v.key WHERE v.rev>v.synced_rev ORDER BY v.sync_fail, v.id LIMIT 100").fetchall()
         if not rows:
             self.sync_online = True; return 0
         visits = []
@@ -372,9 +407,10 @@ class Kiosk:
             for v in visits:
                 res = results.get(v["uuid"])
                 if res and res.get("ok"):
-                    self.db.execute("UPDATE visits SET synced_rev=? WHERE uuid=? AND synced_rev<?", (v["rev"], v["uuid"], v["rev"]))
+                    self.db.execute("UPDATE visits SET synced_rev=?, sync_fail=0 WHERE uuid=? AND synced_rev<?", (v["rev"], v["uuid"], v["rev"]))
                     accepted += 1
                 elif res:
+                    self.db.execute("UPDATE visits SET sync_fail=sync_fail+1 WHERE uuid=?", (v["uuid"],))
                     self.sync_error = "%s: %s" % (v["uuid"][:8], res.get("error"))
             self.db.commit()
         if accepted: self.sync_ok_at, self.sync_error = utcnow(), ""
@@ -390,6 +426,7 @@ def uploader():
         K.wake.wait(delay); K.wake.clear()
         try:
             K.fix_times()
+            K.close_forgotten()
             n = K.push()
             delay = SYNC_EVERY if K.pending() == 0 or n else min(delay * 2, 120)
             if n: print("uploaded %d visit(s)" % n, flush=True)
@@ -486,11 +523,20 @@ class Server(socketserver.ThreadingMixIn, HTTPServer):
 
 
 def import_csv(path):
-    for r in csv.DictReader(open(path, newline="", encoding="utf-8-sig")):
+    """Adds new people and updates existing ones. A blank card_uid keeps the card already on file (for example one an admin registered
+    at the kiosk), and registered_by is never touched. Update-then-insert because the Jetson's SQLite (3.22) has no upsert."""
+    added = updated = 0
+    with open(path, newline="", encoding="utf-8-sig") as f: rows = list(csv.DictReader(f))
+    for r in rows:
         k = r["reg_no"].strip().upper()
-        K.db.execute("INSERT OR REPLACE INTO people(key,reg_no,card_uid,name,department,registered) VALUES(?,?,?,?,?,1)",
-                     (k, k, r.get("card_uid", "").strip().upper(), r["name"].strip(), r["department"].strip()))
-    K.db.commit(); print("imported")
+        uid = (r.get("card_uid") or "").strip().upper() or None              # NULL, never '': an empty uid must not look like a card
+        name, dept = r["name"].strip(), r["department"].strip()
+        cur = K.db.execute("UPDATE people SET reg_no=?, name=?, department=?, registered=1, card_uid=COALESCE(?, card_uid) WHERE key=?",
+                           (k, name, dept, uid, k))
+        if cur.rowcount: updated += 1; continue
+        K.db.execute("INSERT INTO people(key,reg_no,card_uid,name,department,registered) VALUES(?,?,?,?,?,1)", (k, k, uid, name, dept))
+        added += 1
+    K.db.commit(); print("imported: %d added, %d updated" % (added, updated))
 
 def export_csv(path):
     rows = K.db.execute("SELECT key,name,department,purpose,in_time,out_time,in_q,out_q,rev>synced_rev FROM visits ORDER BY id").fetchall()
