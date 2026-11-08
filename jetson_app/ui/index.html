@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab attendance</title>
+<style>
+@font-face{font-family:"Archivo";src:url(fonts/archivo.woff2) format("woff2");font-weight:100 900;font-stretch:62% 125%;font-display:swap}
+:root{
+  --paper:#EEF0F3; --ink:#0A1B4D; --board:#0A1B4D; --board-2:#142a6b;
+  --blue:#1D44F0; --orange:#FF5B14; --rule:#BBC3D1; --muted:#566383; --white:#fff; --bad:#C4291B;
+  --unit:clamp(14px,1.85vh,26px);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:"Archivo",system-ui,"Segoe UI",Roboto,"DejaVu Sans",sans-serif;font-stretch:100%;font-weight:500;font-size:var(--unit);
+  color:var(--ink);background:var(--paper);overflow:hidden;user-select:none;-webkit-user-select:none;
+  transition:background-color .45s ease,color .45s ease}
+body[data-screen="in"]{background:var(--blue);color:var(--white)}
+body[data-screen="out"]{background:var(--orange);color:var(--ink)}
+body[data-screen="unknown"]{background:var(--bad);color:var(--white)}
+body[data-screen="admin_wait"]{background:#FFC21A;color:var(--ink)}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0}
+input{user-select:text;-webkit-user-select:text}
+:focus-visible{outline:.18em solid var(--blue);outline-offset:.18em}
+body[data-screen="in"] :focus-visible,body[data-screen="unknown"] :focus-visible{outline-color:var(--white)}
+.cond{font-stretch:68%;font-weight:800;letter-spacing:-.005em;line-height:.92}
+
+.app{height:100vh;position:relative}
+.screen{position:absolute;top:0;right:0;bottom:0;left:0;display:none}
+.screen.on{display:grid}
+
+/* status band (only shown when something is wrong) */
+.warn{position:fixed;left:0;right:0;top:0;z-index:5;background:var(--bad);color:#fff;font-weight:700;padding:.55em 3vw;display:none;font-size:.95rem}
+.warn.on{display:block}
+
+/* ───── idle ───── */
+#idle{grid-template-columns:1.18fr 1fr;height:100%}
+.board{background:var(--board);color:var(--white);padding:6vh 3.2vw 4vh;display:grid;grid-template-rows:auto 1fr auto;min-width:0}
+.board h2{font-size:2.2em;font-stretch:70%;font-weight:800;line-height:1;letter-spacing:0}
+.board .cols,.board .row{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(0,1.5fr) calc(var(--unit)*6.4) calc(var(--unit)*6.4);gap:1em;align-items:baseline}
+.board .cols{margin-top:3vh;padding-bottom:1.1vh;border-bottom:2px solid #5d74c9;color:#b7c4f5;font-size:var(--unit);font-weight:600}
+.rows{overflow:hidden;align-self:start;width:100%}
+.board .row{padding:1.5vh 0;border-bottom:1px solid #2c4390;font-size:1.3em;font-weight:600}
+.row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+.row .pp{color:#c9d3f8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.row .t{font-variant-numeric:tabular-nums;text-align:left}
+.row .t.still{color:#8ff0b4;font-weight:700}
+.row.fresh{animation:fresh 1.4s ease-out}
+@keyframes fresh{0%{background:var(--blue);transform:translateX(-1.2em)}30%{transform:none}100%{background:transparent}}
+.empty{padding-top:3vh;font-size:1.25em;color:#c9d3f8;max-width:22em;line-height:1.35}
+.board .foot{font-size:1.15em;font-weight:600;color:#c9d3f8;padding-top:2vh}
+.syncnote{font-size:.8em;font-weight:500;color:#9fb0e6;margin-top:.6vh}
+.board .foot b{color:#fff;font-size:1.5em;font-stretch:70%;font-weight:800;margin-right:.1em}
+
+.tapside{padding:6vh 3.4vw 4vh;display:flex;flex-direction:column;justify-content:space-between;min-width:0}
+.clock{display:flex;align-items:baseline;gap:.12em;font-stretch:62%;font-weight:800;font-size:clamp(90px,19vh,260px);line-height:.85;letter-spacing:-.01em}
+.clock .d{display:inline-block;width:.37em;text-align:center}
+.clock .c{display:inline-block;width:.15em;text-align:center;position:relative;top:-.04em}
+.clock .ap{font-size:.3em;margin-left:.12em;font-stretch:80%;letter-spacing:0;color:var(--blue)}
+.date{font-size:1.5em;font-weight:600;color:var(--muted);margin-top:1.4vh}
+.prompt{margin-top:auto}
+.prompt h1{font-size:clamp(54px,10.5vh,150px);margin-bottom:1.6vh}
+.prompt p{font-size:1.3em;line-height:1.4;max-width:21em;color:var(--muted);font-weight:500}
+.reader{width:min(26vw,40vh);margin:0 0 3vh;display:block;overflow:visible}
+.reader .card{animation:tapdrop 3.6s cubic-bezier(.5,0,.2,1) infinite}
+@keyframes tapdrop{0%,12%{transform:translateY(-34px);opacity:.0}22%{opacity:1}52%,70%{transform:translateY(0);opacity:1}88%,100%{transform:translateY(0);opacity:0}}
+.reader .wave{animation:wave 3.6s ease-out infinite;transform-origin:50% 100%}
+@keyframes wave{0%,50%{opacity:0;transform:scale(.6)}58%{opacity:.9}90%,100%{opacity:0;transform:scale(1.25)}}
+
+/* ───── purpose ───── */
+#purpose{grid-template-columns:5fr 6fr;height:100%}
+.who{padding:8vh 3.2vw 5vh 3.4vw;display:flex;flex-direction:column;justify-content:space-between}
+.who .hello{font-size:1.5em;font-weight:600;color:var(--muted)}
+.who h1{font-size:clamp(64px,15vh,210px);margin-top:1.6vh;word-break:break-word;hyphens:auto}
+.who .meta{font-size:1.3em;color:var(--muted);line-height:1.45}
+.choices{background:var(--board);color:var(--white);padding:8vh 3vw 5vh 3vw;display:flex;flex-direction:column}
+.choices h2{font-size:1.9em;font-stretch:72%;font-weight:800;margin-bottom:3vh}
+.choice{display:grid;grid-template-columns:2.2em 1fr;align-items:center;gap:.9em;text-align:left;padding:1.5vh .6em 1.5vh 0;border-top:1px solid #3b52a4;flex:1;font-size:1.7em;font-stretch:78%;font-weight:700;transition:background-color .12s,padding .12s}
+.choice:last-of-type{border-bottom:1px solid #3b52a4}
+.choice kbd{font:inherit;font-stretch:100%;font-size:.62em;font-weight:700;display:grid;place-items:center;width:1.7em;height:1.7em;border:2px solid #7f95e0;border-radius:4px;color:#c9d3f8;margin-left:.2em}
+.choice:hover,.choice:focus-visible{background:var(--blue);padding-left:.5em;outline-offset:-3px}
+.choice:active{background:var(--orange);color:var(--ink)}
+.choices .notme{margin-top:3vh;align-self:flex-start;color:#c9d3f8;font-weight:600;font-size:1.1em;text-decoration:underline;text-underline-offset:.25em;padding:.3em 0}
+.choices .notme:hover{color:#fff}
+
+/* ───── admin registration form ───── */
+#admin_form{grid-template-columns:5fr 6fr;height:100%}
+#admin_form .who h1{font-size:clamp(54px,11.5vh,170px)}
+.badge{display:inline-block;background:#FFC21A;color:var(--ink);font-weight:800;font-size:.95em;padding:.25em .7em;border-radius:99px;margin-bottom:1.4vh}
+.fields{background:#fff;padding:8vh 4vw 5vh 3.4vw;display:flex;flex-direction:column;justify-content:center;gap:4.2vh;border-left:2px solid var(--rule)}
+.field label{display:block;font-weight:700;font-size:1.15em;margin-bottom:.2em}
+.fields{gap:3.2vh}
+input.f.up{text-transform:uppercase}
+.field .hint{display:block;color:var(--muted);font-size:.95em;margin-top:.5em}
+input.f{width:100%;font-size:2.4em;font-stretch:80%;font-weight:700;background:transparent;border:0;border-bottom:3px solid var(--ink);border-radius:0;padding:.18em 0;outline:none;caret-color:var(--blue)}
+input.f::placeholder{color:#a3adc4;font-weight:500}
+input.f:focus{border-bottom-color:var(--blue)}
+.err{color:var(--bad);font-weight:700;min-height:1.4em;font-size:1.1em}
+.actions{display:flex;align-items:center;gap:2.4em}
+.go{background:var(--blue);color:#fff;font-size:1.55em;font-stretch:80%;font-weight:800;padding:.7em 1.5em;border-radius:6px;transition:transform .1s,background .12s}
+.go:hover{background:#1334c4}.go:active{transform:translateY(2px)}
+.cancel{color:var(--muted);font-weight:600;font-size:1.1em;text-decoration:underline;text-underline-offset:.25em;padding:.4em 0}
+.cancel:hover{color:var(--ink)}
+
+/* ───── result ───── */
+.result{height:100%;padding:8vh 5vw 7vh;grid-template-rows:auto 1fr auto;align-items:end}
+.result .tag{font-size:1.7em;font-weight:700;font-stretch:90%}
+.result h1{font-size:clamp(80px,26vh,380px);align-self:center;word-break:break-word;margin:0}
+.result .detail{font-size:2.1em;font-weight:600;line-height:1.3;max-width:26em}
+.result .detail b{font-weight:800}
+.tick{display:inline-block;width:1.1em;height:1.1em;vertical-align:-.15em;margin-right:.35em}
+.tick path{fill:none;stroke:currentColor;stroke-width:3.4;stroke-linecap:square;stroke-dasharray:30;stroke-dashoffset:30;animation:draw .5s .2s ease forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+
+/* countdown strip */
+.timer{position:absolute;left:0;bottom:0;height:.7vh;width:100%;transform-origin:left;background:currentColor;opacity:.9}
+#purpose .timer,#admin_form .timer{background:var(--blue)}
+
+/* ───── unknown card / admin mode ───── */
+.notice{height:100%;padding:8vh 5vw 7vh;grid-template-rows:auto 1fr auto;align-items:end}
+.notice .tag{font-size:1.7em;font-weight:700;font-stretch:90%}
+.notice h1{font-size:clamp(64px,19vh,300px);align-self:center;max-width:12em}
+.notice .detail{font-size:2.1em;font-weight:600;line-height:1.3;max-width:26em}
+.notice .detail b{font-weight:800}
+/* sim helper */
+#sim{position:fixed;right:12px;top:12px;z-index:9;background:#fff;border:2px dashed var(--ink);border-radius:8px;padding:10px;display:none;flex-direction:column;gap:6px;width:250px;font-size:13px;color:var(--ink);font-stretch:100%}
+#sim.on{display:flex}
+#sim input{font-size:13px;padding:6px;border:1px solid var(--rule);border-radius:4px}
+#sim button{padding:6px;border:1px solid var(--ink);border-radius:4px;background:var(--paper)}
+
+@media (max-width:900px){
+  #idle,#purpose,#admin_form{grid-template-columns:1fr;grid-auto-rows:min-content;overflow:auto}
+  .board{order:2}.tapside{order:1}.screen.on{display:grid}
+  .rows{max-height:none}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body data-screen="idle">
+<div class="warn" id="warn"></div>
+<div class="app">
+
+  <section class="screen" id="idle" aria-label="Waiting for a card">
+    <div class="board">
+      <h2 id="boardTitle">In the lab today</h2>
+      <div>
+        <div class="cols"><span>Name</span><span>Reason</span><span>In</span><span>Out</span></div>
+        <div class="rows" id="rows"></div>
+      </div>
+      <div class="foot" id="boardFoot"></div>
+    </div>
+    <div class="tapside">
+      <div>
+        <div class="clock" id="clock" aria-live="off"></div>
+        <div class="date" id="date"></div>
+      </div>
+      <div class="prompt">
+        <svg class="reader" viewBox="0 0 220 150" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true">
+          <rect x="30" y="92" width="160" height="40" rx="6" stroke="#0A1B4D"/>
+          <path d="M70 112h80" stroke="#0A1B4D"/>
+          <g class="wave" stroke="#1D44F0" stroke-width="3"><path d="M82 84q28-22 56 0"/><path d="M92 76q18-14 36 0"/></g>
+          <g class="card"><rect x="62" y="18" width="96" height="60" rx="6" fill="#EEF0F3" stroke="#1D44F0"/><circle cx="85" cy="40" r="7" stroke="#1D44F0"/><path d="M76 62q9-12 18 0M108 36h34M108 48h24" stroke="#1D44F0"/></g>
+        </svg>
+        <h1 class="cond">Tap your ID card</h1>
+        <p>Hold it flat on top of the box. Tap again when you leave.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="screen" id="purpose" aria-label="Purpose of visit">
+    <div class="who">
+      <div>
+        <div class="hello" id="hello"></div>
+        <h1 class="cond" id="pName"></h1>
+      </div>
+      <div class="meta" id="pMeta"></div>
+    </div>
+    <div class="choices">
+      <h2>Why are you here today?</h2>
+      <div id="opts" style="display:flex;flex-direction:column;flex:1"></div>
+      <button class="notme" data-act="cancel">Not me</button>
+    </div>
+    <i class="timer" id="pTimer"></i>
+  </section>
+
+  <section class="screen notice" id="unknown" aria-label="Card not registered">
+    <div class="tag">Card not registered</div>
+    <h1 class="cond">Please call a lab admin.</h1>
+    <div class="detail" id="unkDetail"></div>
+    <i class="timer" id="uTimer"></i>
+  </section>
+
+  <section class="screen notice" id="admin_wait" aria-label="Admin mode">
+    <div class="tag" id="awTag"></div>
+    <h1 class="cond">Tap the new person's card.</h1>
+    <div class="detail">The ring is yellow while you register someone.<br><button class="cancel" data-act="cancel" style="color:inherit">Cancel</button></div>
+    <i class="timer" id="awTimer"></i>
+  </section>
+
+  <section class="screen" id="admin_form" aria-label="Register a new card">
+    <div class="who">
+      <div>
+        <div class="badge" id="byAdmin"></div>
+        <div class="hello" id="idtag"></div>
+        <h1 class="cond">Register this person.</h1>
+      </div>
+      <div class="meta">The card is saved against these details, and their in-time is marked as soon as you save. Next time they only pick a reason.</div>
+    </div>
+    <form class="fields" id="regForm" autocomplete="off" novalidate>
+      <div class="field"><label for="reg">Registration number</label><input class="f up" id="reg" maxlength="20" autocomplete="off" spellcheck="false"><span class="hint">Letters and digits only, for example RA2111003010123.</span></div>
+      <div class="field"><label for="name">Full name</label><input class="f" id="name" maxlength="60" autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label for="dept">Department</label><input class="f" id="dept" maxlength="40" autocomplete="off" spellcheck="false"><span class="hint">Type it in full, for example Computer Science and Engineering.</span></div>
+      <div class="err" id="regErr" role="alert"></div>
+      <div class="actions"><button class="go" type="submit">Save and mark in</button><button type="button" class="cancel" data-act="cancel">Cancel</button></div>
+    </form>
+    <i class="timer" id="rTimer"></i>
+  </section>
+
+  <section class="screen result" id="in" aria-label="Checked in">
+    <div class="tag"><svg class="tick" viewBox="0 0 24 24"><path d="M3 13l6 6L21 6"/></svg>Checked in</div>
+    <h1 class="cond" id="inName"></h1>
+    <div class="detail" id="inDetail"></div>
+    <i class="timer" id="inTimer"></i>
+  </section>
+
+  <section class="screen result" id="out" aria-label="Checked out">
+    <div class="tag"><svg class="tick" viewBox="0 0 24 24"><path d="M3 13l6 6L21 6"/></svg>Checked out</div>
+    <h1 class="cond" id="outName"></h1>
+    <div class="detail" id="outDetail"></div>
+    <i class="timer" id="outTimer"></i>
+  </section>
+</div>
+
+<div id="sim"><b>Card simulator</b>
+  <input id="simUid" value="RA2111003010001" aria-label="Card ID">
+  <button onclick="simTap()">Tap card</button>
+  <button onclick="simTap('RA2111003010001')">Asha Rao (registered)</button>
+  <button onclick="simTap('RA2111003010002')">Vikram Singh (registered)</button>
+  <button onclick="simTap('RA9999999999999')">Unknown card</button>
+  <button onclick="simTap('ADMINCARD01')">Admin 1 card</button>
+  <button onclick="simTap('ADMINCARD02')">Admin 2 card</button>
+  <div id="ring" style="display:flex;align-items:center;gap:8px"><i id="ringDot" style="width:18px;height:18px;border-radius:50%;background:#999;display:inline-block"></i><span id="ringTxt"></span></div></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let S=null,cur="",ver=-1,seenIds=new Set(),firstBoard=true;
+
+async function post(url,body){try{const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});return await r.json()}catch(e){return{ok:false,error:"The kiosk service isn't responding."}}}
+function timer(id,s){const el=$(id); el.style.animation="none"; void el.offsetWidth; el.style.animation=`shrink ${Math.max(s.remaining,.1)}s linear forwards`;}
+const st=document.createElement("style"); st.textContent="@keyframes shrink{to{transform:scaleX(0)}}"; document.head.appendChild(st);
+
+function renderScreen(s){
+  const d=s.data; cur=s.screen;
+  document.body.dataset.screen=s.screen;
+  $$(".screen").forEach(x=>x.classList.toggle("on",x.id===s.screen));
+  if(s.screen==="purpose"){
+    const first=d.name.split(" ")[0];
+    $("#hello").textContent="Welcome back,";
+    $("#pName").textContent=d.name;
+    $("#pMeta").textContent=d.dept+(s.data.tapped?", tapped at "+s.data.tapped:"");
+    $("#opts").innerHTML=s.purposes.map((p,i)=>`<button class="choice" data-purpose="${p.id}"><kbd>${i+1}</kbd><span>${esc(p.label)}</span></button>`).join("");
+    timer("#pTimer",s);
+  }
+  if(s.screen==="unknown"){
+    $("#unkDetail").innerHTML=`Card <b>${esc(d.ident)}</b> isn't in the database.<br>`+(d.admins>0?"An admin taps their own card, then types your registration number, name and department.":"No admin card is set up yet. See the setup guide.");
+    timer("#uTimer",s);
+  }
+  if(s.screen==="admin_wait"){ $("#awTag").textContent="Admin mode: "+d.admin; timer("#awTimer",s); }
+  if(s.screen==="admin_form"){
+    $("#byAdmin").textContent="Admin: "+d.admin;
+    $("#idtag").textContent="Card "+d.ident;
+    $("#reg").value=""; $("#name").value=""; $("#dept").value=""; $("#regErr").textContent="";
+    timer("#rTimer",s); setTimeout(()=>$("#reg").focus(),80);
+  }
+  if(s.screen==="in"){ $("#inName").textContent=d.name; $("#inDetail").innerHTML=`<b>${esc(d.purpose)}</b> at ${esc(d.time_in)}.<br>Tap your card again when you leave.`; timer("#inTimer",s); }
+  if(s.screen==="out"){ $("#outName").textContent=d.name; $("#outDetail").innerHTML=`In at ${esc(d.time_in)}, out at ${esc(d.time_out)}.<br><b>${esc(d.duration.charAt(0).toUpperCase()+d.duration.slice(1))}</b> in the lab.`; timer("#outTimer",s); }
+}
+
+function renderChrome(s){
+  const w=$("#warn"); const msgs=[];
+  if(!s.reader) msgs.push("Card reader not connected. Check the USB cable inside the box.");
+  if(!s.clock_ok) msgs.push("The clock isn't set yet. Visits are still recorded, and their times are corrected automatically once the network connects.");
+  w.textContent=msgs.join("  "); w.classList.toggle("on",msgs.length>0);
+  $("#sim").classList.toggle("on",s.sim);
+  if(s.sim){const c={IDLE:"#9ec9ff",NEW:"#FFC21A",OK:"#1fbf4a",DENY:"#e02b1d"}[s.led]||"#999"; $("#ringDot").style.background=c;
+    $("#ringTxt").textContent="Ring: "+({IDLE:"idle (chasing)",NEW:"yellow, registering",OK:"green, success",DENY:"red, not registered"}[s.led]||s.led);}
+  $("#boardTitle").textContent=s.lab;
+  const rows=$("#rows");
+  if(!s.board.length){ rows.innerHTML='<div class="empty">No visits yet today. Tap your card to be the first.</div>'; }
+  else{
+    const html=s.board.map(v=>{
+      const fresh=!firstBoard&&!seenIds.has(v.id)?" fresh":"";
+      return `<div class="row${fresh}"><span class="nm">${esc(v.name)}</span><span class="pp">${esc(v.purpose)}</span><span class="t">${esc(v.in)}</span><span class="t ${v.out?"":"still"}">${v.out?esc(v.out):"Here"}</span></div>`}).join("");
+    if(rows.dataset.sig!==JSON.stringify(s.board)){ rows.innerHTML=html; rows.dataset.sig=JSON.stringify(s.board); }
+  }
+  s.board.forEach(v=>seenIds.add(v.id)); firstBoard=false;
+  let note="";
+  if(s.sync&&s.sync.configured){ const n=s.sync.pending;
+    note=n>0?`${n} visit${n>1?"s":""} waiting to upload. They send on their own when the network is back.`:"All visits uploaded"+(s.sync.last_ok?" (last at "+s.sync.last_ok+")":""); }
+  $("#boardFoot").innerHTML=(s.inside===0?"Nobody is inside right now.":`<b>${s.inside}</b> ${s.inside===1?"person":"people"} inside right now`)+(note?`<div class="syncnote">${note}</div>`:"");
+}
+
+function tickClock(){
+  const n=new Date(); let h=n.getHours(); const ap=h>=12?"pm":"am"; h=h%12||12;
+  const hh=String(h).split("").map(c=>`<span class="d">${c}</span>`).join("");
+  const mm=String(n.getMinutes()).padStart(2,"0").split("").map(c=>`<span class="d">${c}</span>`).join("");
+  const html=`${hh}<span class="c">:</span>${mm}<span class="ap">${ap}</span>`;
+  const el=$("#clock"); if(el.dataset.v!==html){el.innerHTML=html; el.dataset.v=html;}
+  $("#date").textContent=n.toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"long"});
+}
+
+async function poll(){
+  try{
+    const s=await (await fetch("/api/state",{cache:"no-store"})).json();
+    S=s; renderChrome(s);
+    if(s.ver!==ver||s.screen!==cur){ ver=s.ver; renderScreen(s); }
+  }catch(e){}
+  setTimeout(poll,300);
+}
+
+document.addEventListener("click",async e=>{
+  const t=e.target.closest("[data-purpose],[data-act]"); if(!t) return;
+  if(t.dataset.purpose) await post("/api/purpose",{purpose:t.dataset.purpose});
+  else if(t.dataset.act==="cancel") await post("/api/cancel");
+});
+$("#reg").addEventListener("keydown",e=>{ if(e.key==="Enter"){e.preventDefault(); $("#name").focus();} });
+$("#name").addEventListener("keydown",e=>{ if(e.key==="Enter"){e.preventDefault(); $("#dept").focus();} });
+$("#regForm").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const r=await post("/api/register",{reg_no:$("#reg").value,name:$("#name").value,department:$("#dept").value});
+  if(!r.ok) $("#regErr").textContent=r.error;
+});
+document.addEventListener("keydown",e=>{
+  if(cur==="purpose"){const i=parseInt(e.key,10); if(i>=1&&S&&i<=S.purposes.length) post("/api/purpose",{purpose:S.purposes[i-1].id});}
+  if(e.key==="Escape"&&["purpose","unknown","admin_wait","admin_form"].includes(cur)) post("/api/cancel");
+});
+function simTap(u){ post("/api/sim/tap",{uid:u||$("#simUid").value}); }
+$("#simUid").addEventListener("keydown",e=>{ if(e.key==="Enter") simTap(); });
+
+tickClock(); setInterval(tickClock,1000); poll();
+</script>
+</body>
+</html>
